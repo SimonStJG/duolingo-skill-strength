@@ -5,10 +5,11 @@
 // @description  Shows individual skill strength
 // @author       Fabian Becker
 // @match        https://www.duolingo.com/*
-// @downloadURL  https://github.com/halfdan/duolingo-skill-strength/raw/master/skill-strength.user.js
-// @updateURL    https://github.com/halfdan/duolingo-skill-strength/raw/master/skill-strength.user.js
+// @downloadURL  https://github.com/simonstjg/duolingo-skill-strength/raw/master/skill-strength.user.js
+// @updateURL    https://github.com/simonstjg/duolingo-skill-strength/raw/master/skill-strength.user.js
 // @require      http://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js
-// @require      https://cdnjs.cloudflare.com/ajax/libs/lodash.js/2.2.1/lodash.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.11/lodash.min.js
+// @require      https://www.chartjs.org/dist/2.7.3/Chart.bundle.js
 // @grant        none
 // ==/UserScript==
 
@@ -47,8 +48,8 @@ function f($) {
             edad = 0.0,
             ahora = new Date().getTime();
 
-        var averageStrength = average(vocab.map(function(v) { return v.strength; }));
-        var averageAge = average(vocab.map(function(v) { return (ahora - v.last_practiced_ms) / 1000 ; }));
+        var averageStrength = _.mean(vocab.map(function(v) { return v.strength; }));
+        var averageAge = _.mean(vocab.map(function(v) { return (ahora - v.last_practiced_ms) / 1000 ; }));
         var medianAge = median(vocab.map(function(v) { return (ahora - v.last_practiced_ms) / 1000 ; }));
         var zeroStrength = vocab.filter(function(v) { return v.strength === 0; }).length;
 
@@ -62,11 +63,17 @@ function f($) {
         console.log("Average Age (hours): " + averageAge / 3600);
         console.log("Median Age (hours): " + medianAge / 3600);
 
-        var el = $("<div class='box-gray' id='skillstrength'></div>"),
-        	list = $("<ul class='list-skills'></ul>"),
-            skillIdMap = {};
+        stored_strength = _.map(
+            JSON.parse(window.localStorage.getItem("__skill_strength") || "[]"), 
+            e => [new Date(e[0]), e[1], e[2]]
+        )
+        stored_strength.push([new Date(), averageStrength, zeroStrength])
+        window.localStorage.setItem("__skill_strength", JSON.stringify(stored_strength))
 
-       	var language = data.learning_language;
+        var language = data.learning_language;
+        var skillStrengthInfoBox = $("<div class='box-gray' id='skillstrength'></div>");
+        var list = $("<ul class='list-skills'></ul>");
+        var skillIdMap = {};
 
         _.each(skillStrength, function (skill) {
             var item = $("<li class='list-skills-item'></li>");
@@ -75,19 +82,65 @@ function f($) {
             list.append(item);
         });
 
-        el.append(
+        skillStrengthInfoBox.append(
             $("<h2>Skill Strength</h2>"),
             $("<div class='board'></div>").append(list)
         );
 
-        el.append("<span><strong>Overall Strength: </strong>" + (averageStrength * 100).toFixed(1) + " %</span><br />");
-        el.append("<span><strong>Dead Words (0 Strength): </strong>" + zeroStrength + "/" + vocab.length + "</span>");
+        skillStrengthInfoBox.append("<span><strong>Overall Strength: </strong>" + (averageStrength * 100).toFixed(1) + " %</span><br />");
+        skillStrengthInfoBox.append("<span><strong>Dead Words (0 Strength): </strong>" + zeroStrength + "/" + vocab.length + "</span>");
 
-        displaySkillStrength(el);
+        [labels, averageStrengths, zeroStrengths] = _.zip.apply(_, stored_strength)
+        var timeFormat = 'MM/DD/YYYY HH:mm';
+        var graphConfig = {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Overall Strength',
+                    fill: false,
+                    data: averageStrengths
+                }]
+            },
+            options: {
+                title: {
+                    text: 'Average Strength / Zero Strength'
+                },
+                scales: {
+                    xAxes: [{
+                        type: 'time',
+                        time: {
+                            format: timeFormat,
+                            // round: 'day'
+                            tooltipFormat: 'll HH:mm'
+                        },
+                        scaleLabel: {
+                            display: true,
+                            labelString: 'Date'
+                        }
+                    }],
+                    yAxes: [{
+                        scaleLabel: {
+                            display: true,
+                            labelString: 'value'
+                        }
+                    }]
+                },
+            }
+        };
+
+        var skillStrengthGraph = $("<div class='box-gray' id='skillstrength'><canvas id='canvas' style='display: block; width: 1004px; height: 502px;' width='1004' height='502' class='chartjs-render-monitor'></canvas></div>")
+  
+        displaySidebarElement(skillStrengthGraph);
+        displaySidebarElement(skillStrengthInfoBox);
+
+        var ctx = document.getElementById('canvas').getContext('2d');
+        window.skillStrengthGraph = new Chart(ctx, graphConfig);      
+  
         isLoading = false;
     }
 
-    function displaySkillStrength(el) {
+    function displaySidebarElement(el) {
         if ($("section.sidebar-left > div.inner").length > 0) {
             $("section.sidebar-left > div.inner").append(el);
         } else {
@@ -98,17 +151,8 @@ function f($) {
         }
     }
 
-    function average(data) {
-        var sum = data.reduce(function(a, b) { return a + b; });
-        return sum / data.length;
-    }
-
     function median(data) {
-
-        // extract the .values field and sort the resulting array
-        var m = data.sort(function(a, b) {
-            return a - b;
-        });
+        var m = _.sortBy(data);
 
         var middle = Math.floor((m.length - 1) / 2); // NB: operator precedence
         if (m.length % 2) {
@@ -124,7 +168,7 @@ function f($) {
             .map(function(value, key) {
                 return {
                     name: key,
-                    strength: average(value.map(function(v) { return v.strength; })),
+                    strength: _.meanBy(value, "strength"),
                     url: value[0].skill_url_title
                 };
             }).value();
@@ -175,8 +219,8 @@ function f($) {
     }
 
     new MutationObserver(onChange).observe(document.body, {
-    childList : true,
-    subtree : true
+        childList : true,
+        subtree : true
     });
 
 }
